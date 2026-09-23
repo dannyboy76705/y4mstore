@@ -281,7 +281,7 @@ y4mstore -a -f all-episodes.txt set/ep*-elementary            # y/u/v component 
 
 Directories are taken **in the order given**, so a shell glob gives episode order.
 
-**One pooled sort, not one per episode.** All the directories' files are gathered and sorted together, so frames that recur across episodes (an opening sequence, a repeated shot) are grouped next to each other. With two copies of an episode, for example, the same frame from each copy ends up adjacent. Exact duplicates are counted over the whole pool too. The list is identical to what the plain sorter gives on the same combined list of files.
+**One pooled sort, not one per episode.** All the directories' files are gathered and sorted together, so frames that recur across episodes (an opening sequence, a repeated shot) are grouped next to each other. With two copies of an episode, for example, the same frame from each copy ends up adjacent. Exact duplicates are counted over the whole pool too.
 
 - **Frame clips:** every frame file from every directory is pooled and sorted once into one list.
 - **Component directories:** all the `y` planes are pooled and sorted, then all the `u` planes, then all the `v` planes, and the three lists are appended: all the y's, then the u's, then the v's, as one sort file.
