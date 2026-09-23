@@ -5,8 +5,8 @@
  *
  * MIT License
  *
- * Copyright (c) 2026 nilsort contributors
- * Copyright (c) 2026 y4mstore contributors
+ * Copyright (c) 2026 Daniel Lee Witzel (nilsort)
+ * Copyright (c) 2026 Daniel Lee Witzel (y4mstore)
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the

@@ -423,6 +423,6 @@ This is a separate mechanism from the `-a` additive-average sort. This duplicate
 
 ## License
 
-MIT. See `LICENSE` and the header comment in `y4mstore.c`. y4mstore derives from nilsort, so both copyright lines are retained.
+MIT, © 2026 Daniel Lee Witzel. See `LICENSE` and the header comment in `y4mstore.c`. y4mstore derives from nilsort, so both copyright lines are retained.
 
 The nilsimsa algorithm itself (the TRAN/POPC-derived tables, `tran3` mixing function, and digest construction) is a faithful port of the public reference implementation originally written by cmeclax, based on Damiani et al. 2004, "An Open Digest-based Technique for Spam Detection." Threading, greedy + 2-opt ordering, progress reporting, and the POPCNT-based comparison are inherited from nilsort.
