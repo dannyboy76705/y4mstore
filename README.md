@@ -248,10 +248,11 @@ Each file is one plane, copied through unchanged: the Y plane is width x height 
 
 `-e` can be combined with `-n` or `-a` (not both) but not with `-i`, `-s` or `-c`.
 
-**Sorting planes that already exist (no `-e` needed).** If the directory you name already holds `y/`, `u/` and `v/` planes, which is exactly what `-e` leaves behind, y4mstore recognises it on its own. Run it without `-e` and it does the second half of the job: the selected sorter runs on each component directory and the three lists are appended into one, y then u then v.
+**Sorting planes that already exist (no `-e` needed).** If the directory you name already holds `y/`, `u/` and `v/` planes, which is exactly what `-e` leaves behind, y4mstore recognises it on its own. Run it without `-e` and it does the second half of the job: without `-n` or `-a`, each component directory's files are listed in natural order and the three lists are appended, y then u then v; with `-n` or `-a`, the chosen sorter runs on each component directory instead.
 
 ```
-y4mstore myset/ep1-elementary                  # nilsimsa on each plane directory
+y4mstore myset/ep1-elementary                         # no sort: natural order list generated
+y4mstore -n myset/ep1-elementary                       # nilsimsa on each plane directory
 y4mstore -a -f all-planes.txt myset/ep1-elementary    # additive averages, one combined file
 ```
 
@@ -273,7 +274,8 @@ Checked by comparing every plane file byte-for-byte with planes extracted indepe
 For sorting only, `y4mstore` accepts more than one directory and produces **one sort file** for all of them. The usual case is several episodes:
 
 ```
-y4mstore -f all-episodes.txt set/ep1 set/ep2 set/ep3          # frame clips, nilsimsa
+y4mstore -f all-episodes.txt set/ep1 set/ep2 set/ep3          # no sort: natural order list generated
+y4mstore -n -f all-episodes.txt set/ep1 set/ep2 set/ep3       # frame clips, nilsimsa
 y4mstore -a -f all-episodes.txt set/ep*-elementary            # y/u/v component directories, additive
 ```
 

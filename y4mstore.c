@@ -3093,7 +3093,7 @@ static int component_sort(const char *dir, const elem_opts_t *op) {
 
     if (!op->quiet) {
         fprintf(stderr, "y4mstore: %s -- component storage (y, u, v planes); sort: %s\n", dir,
-                op->alt ? "additive averages (-a)" : op->nilsimsa ? "nilsimsa (-n)" : "none (natural order)");
+                op->alt ? "additive averages (-a)" : op->nilsimsa ? "nilsimsa (-n)" : "none -- natural order list being generated");
     }
     /* the specs are found the way a clip's are (its parent's specs.txt). The
      * additive sorter needs them for the plane sizes; nilsimsa does not, so
@@ -3330,7 +3330,7 @@ static int multi_sort(int ndirs, char **dirs, const elem_opts_t *op) {
         }
     }
 
-    const char *sortname = op->alt ? "additive averages (-a)" : op->nilsimsa ? "nilsimsa (-n)" : "none (natural order)";
+    const char *sortname = op->alt ? "additive averages (-a)" : op->nilsimsa ? "nilsimsa (-n)" : "none -- natural order list being generated";
     if (!quiet) {
         if (kind == DK_FRAMES) {
             fprintf(stderr, "y4mstore: %d directories -- frame storage; sort: %s; %zu files pooled into one list\n",
@@ -3549,7 +3549,7 @@ int main(int argc, char **argv) {
     if (elem_src) {
         fprintf(stderr, "y4mstore: elementary: y4m from %s into %s -- component storage (y, u, v planes); sort: %s\n",
                 !strcmp(elem_src, "-") ? "stdin" : elem_src, argv[optind],
-                alt ? "additive averages (-a)" : do_nilsimsa ? "nilsimsa (-n)" : "none (natural order)");
+                alt ? "additive averages (-a)" : do_nilsimsa ? "nilsimsa (-n)" : "none -- natural order list being generated");
         elem_opts_t eo = { alt, do_nilsimsa, max_sweeps, nthreads, quiet, out_path, dump_fp };
         int erc = elementary_split(elem_src, argv[optind], &eo);
         if (dump_fp) fclose(dump_fp);
@@ -3630,7 +3630,7 @@ int main(int argc, char **argv) {
             argv[optind],
             alt ? "additive averages (-a)"
                 : do_nilsimsa ? "nilsimsa (-n)"
-                              : "none (pass -n for nilsimsa or -a for additive): natural filename order",
+                              : "none -- natural order list being generated (pass -n for nilsimsa or -a for additive)",
             out_path ? out_path : "stdout");
 
     FILE *out = stdout;
