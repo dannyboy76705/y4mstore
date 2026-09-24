@@ -133,7 +133,8 @@
  *   -i SRC ingest a y4m stream (file, or - for stdin) into a new clip directory of
  *          raw frame files, creating/checking specs.txt from its header
  *   -a     alternate sort: order frames by their additive Y/U/V component
- *          averages (one 12-digit key each) instead of nilsimsa similarity.
+ *          averages (scaled x100 for precision; a bit-depth-dependent
+ *          digit width per plane) instead of nilsimsa similarity.
  *          Mutually exclusive with -n.
  *   -c     check the set directory's specs.txt: create it if missing
  *          (asking for the values), otherwise list it; nothing else runs
@@ -1185,6 +1186,32 @@ static int is_component_dir(const char *dir) {
     return !has_yuv_files(dir);
 }
 
+/* True if dir's immediate contents are ONLY subdirectories (plus,
+ * optionally, specs.txt) -- no loose regular files directly inside it.
+ * That shape means dir is a set directory holding more than one clip
+ * (or exactly one, nested), not a clip itself: pointing a sort at it
+ * would otherwise recurse blindly through every clip's files as one
+ * undifferentiated pile, mixing separate clips (and, for component
+ * clips, mixing y/u/v planes together) with no regard for the
+ * structure. Callers should refuse rather than silently flattening it. */
+static int dir_holds_only_subdirs(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int any_subdir = 0, any_loose_file = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
+        char full[PATH_MAX];
+        snprintf(full, sizeof(full), "%s/%s", dir, ent->d_name);
+        struct stat st;
+        if (lstat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) any_subdir = 1;
+        else if (S_ISREG(st.st_mode) && strcmp(ent->d_name, SPECS_FILENAME) != 0) any_loose_file = 1;
+    }
+    closedir(d);
+    return any_subdir && !any_loose_file;
+}
+
 /* Byte sizes of a frame's y, u and v planes at these specs. */
 static void plane_sizes(const specs_t *sp, uint64_t psz[3]) {
     const sampling_info_t *si = &SAMPLINGS[sp->sampling];
@@ -1688,10 +1715,15 @@ done:
 /* into its Y, U and V planes. Every plane's samples are added up    */
 /* and divided by that plane's own sample count (345600 for the Y    */
 /* plane of a 720x480 frame; 4:2:0 chroma planes have 86400).        */
-/* Each average becomes 4 digits (room for 10-bit, up to 1023) and   */
-/* the three are joined into one 12-digit number, Y first:           */
-/*     Y=250 U=127 V=36   ->   025001270036                          */
-/* Frames are then sorted numerically by that number. One sort.      */
+/* Each average is multiplied by 100 before rounding (ADDITIVE_SCALE),  */
+/* since an average of many samples has real, usable precision far     */
+/* finer than one sample's own bit depth -- see the ADDITIVE_SCALE     */
+/* comment above alt_key_digits() for why 100 specifically. This makes */
+/* each plane's digit width bit-depth-dependent (5 digits at 8-bit,    */
+/* up to 25500; 6 digits at 10-bit, up to 102300), and the three are   */
+/* joined into one number, Y first:                                    */
+/*     8-bit, Y=250.00 U=127.00 V=36.00  ->  250001270003600           */
+/* Frames are then sorted numerically by that number. One sort.        */
 /*                                                                   */
 /* Equal keys do NOT mean identical frames: moving a pixel changes   */
 /* nothing about an average. So ties are ordered by filename (which  */
@@ -1699,22 +1731,52 @@ done:
 /* ---------------------------------------------------------------- */
 
 typedef struct {
-    uint64_t key;        /* YYYYUUUUVVVV as one decimal number */
+    uint64_t key;        /* Y/U/V packed as one decimal number, digit width per alt_key_digits() */
     const char *path;
 } alt_entry_t;
 
-/* Rounded average of n samples; 8-bit samples are bytes, wider ones are
- * 16-bit little-endian words. Clamped to 9999 so a key never overflows
- * its 4 digits (only possible with samples far outside 10-bit range). */
-static uint64_t alt_plane_avg(const unsigned char *p, uint64_t n, int wide) {
+/* Precision multiplier for -a's averaged key. An average of many samples
+ * has real, usable resolution far finer than one sample's own bit depth
+ * (its noise floor shrinks as 1/sqrt(sample count)); *1 (the original
+ * scheme) rounded to a single sample's own integer range and threw that
+ * away, especially on the U/V planes (4x fewer samples than Y, so 4x
+ * coarser floor, using the SAME 4-digit range as Y). *100 sits solidly
+ * past a conservative *10 step and comfortably below where real, non-CG
+ * source noise would start to dominate -- see conversation for the
+ * quantization/noise-floor analysis this was chosen from. */
+#define ADDITIVE_SCALE 100
+
+/* Decimal digits needed to hold (max sample value at this bit depth) *
+ * ADDITIVE_SCALE -- e.g. 255*100=25500 (5 digits) at 8-bit, 1023*100=
+ * 102300 (6 digits) at 10-bit. This replaces the old fixed width of 4,
+ * which only happened to fit both bit depths at *1. */
+static int alt_key_digits(int bitdepth) {
+    uint64_t v = (uint64_t)(bitdepth > 8 ? 1023 : 255) * ADDITIVE_SCALE;
+    int d = 1;
+    while (v >= 10) { v /= 10; d++; }
+    return d;
+}
+
+/* 10^n as a uint64_t, n small (at most ~6 here). */
+static uint64_t upow10(int n) {
+    uint64_t v = 1;
+    while (n-- > 0) v *= 10;
+    return v;
+}
+
+/* Rounded, scaled average of n samples; 8-bit samples are bytes, wider
+ * ones are 16-bit little-endian words. Clamped to max_val (the true
+ * maximum possible average at this bit depth and scale) as a safety net;
+ * a correct average can never exceed it. */
+static uint64_t alt_plane_avg(const unsigned char *p, uint64_t n, int wide, uint64_t max_val) {
     uint64_t sum = 0;
     if (!wide) {
         for (uint64_t i = 0; i < n; i++) sum += p[i];
     } else {
         for (uint64_t i = 0; i < n; i++) sum += (uint64_t)p[2 * i] | ((uint64_t)p[2 * i + 1] << 8);
     }
-    uint64_t avg = (sum + n / 2) / n;
-    return avg > 9999 ? 9999 : avg;
+    uint64_t avg = (sum * ADDITIVE_SCALE + n / 2) / n;
+    return avg > max_val ? max_val : avg;
 }
 
 static uint64_t alt_frame_key(const unsigned char *frame, const specs_t *sp) {
@@ -1725,10 +1787,12 @@ static uint64_t alt_frame_key(const unsigned char *frame, const specs_t *sp) {
     uint64_t cw = ((uint64_t)sp->width + (uint64_t)si->hsub - 1) / (uint64_t)si->hsub;
     uint64_t ch = ((uint64_t)sp->height + (uint64_t)si->vsub - 1) / (uint64_t)si->vsub;
     uint64_t cs = cw * ch;
-    uint64_t y = alt_plane_avg(frame, ys, wide);
-    uint64_t u = alt_plane_avg(frame + ys * bps, cs, wide);
-    uint64_t v = alt_plane_avg(frame + (ys + cs) * bps, cs, wide);
-    return y * 100000000ULL + u * 10000ULL + v;
+    int d = alt_key_digits(sp->bitdepth);
+    uint64_t max_val = (uint64_t)(wide ? 1023 : 255) * ADDITIVE_SCALE;
+    uint64_t y = alt_plane_avg(frame, ys, wide, max_val);
+    uint64_t u = alt_plane_avg(frame + ys * bps, cs, wide, max_val);
+    uint64_t v = alt_plane_avg(frame + (ys + cs) * bps, cs, wide, max_val);
+    return y * upow10(2 * d) + u * upow10(d) + v;
 }
 
 typedef struct {
@@ -1763,7 +1827,8 @@ static void *alt_worker(void *arg) {
                     j->err[i] = EIO;
                 } else if (j->plane_only) {
                     int wide = j->sp->bitdepth > 8;
-                    j->keys[i] = alt_plane_avg(buf, j->expect / (wide ? 2 : 1), wide);
+                    j->keys[i] = alt_plane_avg(buf, j->expect / (wide ? 2 : 1), wide,
+                                               (uint64_t)(wide ? 1023 : 255) * ADDITIVE_SCALE);
                 } else {
                     j->keys[i] = alt_frame_key(buf, j->sp);
                 }
@@ -1787,10 +1852,10 @@ static int alt_entry_cmp(const void *a, const void *b) {
  * is exactly the expected size and readable.
  *
  *  - plane_bytes == 0: each file is one whole frame (the -a mode); the key
- *    is the 12-digit Y/U/V number.
+ *    is the Y/U/V number (digit width per alt_key_digits(), x3).
  *  - plane_bytes  > 0: each file is ONE plane of exactly that many bytes
  *    (used by -e on the y, u and v directories); the key is that plane's
- *    single 4-digit average.
+ *    single average, digit width per alt_key_digits().
  *  - out_shared != NULL: write the sorted paths there (the caller owns the
  *    stream); otherwise open out_path, or use stdout.
  *  - label, if given, prefixes the summary lines ("y", "u", "v"). */
@@ -1798,7 +1863,7 @@ static int alt_sort(char **paths, size_t n, const specs_t *sp, const char *specs
                     const char *out_path, FILE *out_shared, uint64_t plane_bytes, const char *label,
                     int nthreads, int quiet, FILE *dump) {
     const uint64_t expect = plane_bytes ? plane_bytes : sp->frame_bytes;
-    const int digits = plane_bytes ? 4 : 12;
+    const int digits = plane_bytes ? alt_key_digits(sp->bitdepth) : 3 * alt_key_digits(sp->bitdepth);
     char lab[16] = "";
     if (label) snprintf(lab, sizeof(lab), "[%s] ", label);
     int rc = 1;
@@ -3397,6 +3462,9 @@ static void usage(FILE *fp, const char *prog) {
         "Several directories (say, several episodes) sort together into one list, but only\n"
         "if they are all whole-frame clips or all component directories; component\n"
         "directories pool all the y planes, then the u, then the v.\n\n"
+        "A <dir> that holds only subdirectories (a set with more than one clip in it) is\n"
+        "refused rather than blindly recursed into every clip as one undifferentiated\n"
+        "pile: name or glob the clips explicitly (see above) instead.\n\n"
         "Without -n or -a, no sort runs: files are listed in natural filename order,\n"
         "with no hashing and no duplicate detection (that's paired with -n, see below).\n"
         "This is the default so that adding clips over time, or checking a growing\n"
@@ -3430,8 +3498,9 @@ static void usage(FILE *fp, const char *prog) {
         "         and the three lists are appended into one (-f FILE\n"
         "         or stdout).\n"
         "  -a     alternate sort, no similarity hash: each frame's Y, U and V\n"
-        "         sample averages become a 12-digit key (4 digits each, Y first)\n"
-        "         and frames are sorted numerically by it. Needs specs.txt and\n"
+        "         sample averages (scaled x100 for precision) become a key,\n"
+        "         Y first, most significant, digit width per bit depth\n"
+        "         (5 digits/plane at 8-bit, 6 at 10-bit). Needs specs.txt and\n"
         "         exactly one frame per file. -t applies; -o does not.\n"
         "         Equal keys are ordered by filename.\n"
         "  -d PATH with -a: outputs averaged per frame/component to PATH\n"
@@ -3624,6 +3693,19 @@ int main(int argc, char **argv) {
         int crc = component_sort(argv[optind], &co);
         if (dump_fp) fclose(dump_fp);
         return crc;
+    }
+
+    /* Not a clip itself, and not a component directory: if it holds only
+     * subdirectories (no loose frame files directly inside), it's a set
+     * directory with more than one clip in it. Pointing a sort at it
+     * directly would otherwise recurse blindly through every clip's files
+     * as one undifferentiated pile -- mixing separate clips together, and
+     * for component clips, mixing y/u/v planes together too. Refuse
+     * rather than silently doing that. */
+    if (strcmp(argv[optind], "-") != 0 && dir_holds_only_subdirs(argv[optind])) {
+        fprintf(stderr, "y4mstore: multiple clips detected. Please list the clips to be ingested by name or glob\n");
+        if (dump_fp) fclose(dump_fp);
+        return 1;
     }
 
     fprintf(stderr, "y4mstore: %s -- frame storage; sort: %s | outputting to %s\n",

@@ -42,8 +42,8 @@ This ordering step is the one meant to be handed to zpaq-order (see [Intended pa
 A much cheaper alternative: no similarity hash, no O(n²) comparisons, and no per-file duplicate detection.
 
 1. **Split** each frame into its Y, U and V planes, using the resolution, sampling and bit depth from `specs.txt`.
-2. **Average** each plane's samples, rounded to the nearest whole number.
-3. **Key** each frame as a 12-digit number (4 digits per plane, Y first, most significant). In component mode, each file is only one plane, so only a 4-digit number is assigned per file.
+2. **Average** each plane's samples, scaled ×100 and rounded to the nearest integer (an average of many samples has real, usable precision well past a single sample's own bit depth — see [Alternate hash: additive averages](#alternate-hash-additive-averages--a) for why ×100).
+3. **Key** each frame by joining the three scaled averages, Y first, most significant. Digit width per plane depends on bit depth (5 digits at 8-bit, up to 25500; 6 at 10-bit, up to 102300). In component mode, each file is only one plane, so only that plane's own digit-width number is assigned per file.
 4. **Sort** frames numerically by that key, ascending, with ties broken by filename.
 
 Every frame is handled independently, so this is O(n): a fixed thread pool averages frames in parallel, and the whole run ends in a single numeric sort, with no refinement passes. It's not a similarity measure — two frames with the same three averages can look nothing alike — and it cannot detect exact duplicates, since averaging is lossy by nature. Full details, the caveats, and measured numbers are in [Alternate hash: additive averages](#alternate-hash-additive-averages--a) below.
@@ -244,7 +244,7 @@ Each file is one plane, copied through unchanged: the Y plane is width x height 
 
 - **Default: no sort.** Files are listed in natural filename order, per plane; no hashing, no duplicate detection.
 - **With `-n`: nilsimsa.** Each plane directory gets the normal greedy + 2-opt similarity sort. `-o` and `-t` apply to each plane. Files are listed in frame order before sorting, so the run is deterministic.
-- **With `-a`: additive averages.** Each plane file is a single plane, so its key is that plane's own rounded average as **4 digits** (0 to 255 at 8-bit, up to 1023 at 10-bit), sorted ascending, with ties in filename order. Summary lines are labelled per plane (`[y] 41 distinct keys, ...`). A single plane average is a coarse key: expect many frames to share one, especially in the U and V planes, where averages cluster near mid-grey. The per-plane summary shows the distinct-key count straight away.
+- **With `-a`: additive averages.** Each plane file is a single plane, so its key is that plane's own average, scaled ×100 and rounded (digit width per bit depth: 5 digits at 8-bit, 6 at 10-bit), sorted ascending, with ties in filename order. Summary lines are labelled per plane (`[y] 41 distinct keys, ...`). The ×100 scaling exists specifically because a plane average's coarser, unscaled range ties far too often, especially on U and V (4× fewer samples than Y); the per-plane summary's distinct-key count shows directly how much it's actually discriminating on your footage.
 
 `-e` can be combined with `-n` or `-a` (not both) but not with `-i`, `-s` or `-c`.
 
@@ -279,6 +279,8 @@ y4mstore -n -f all-episodes.txt set/ep1 set/ep2 set/ep3       # frame clips, nil
 y4mstore -a -f all-episodes.txt set/ep*-elementary            # y/u/v component directories, additive
 ```
 
+Naming the set directory itself (`set`, holding `ep1`, `ep2`, `ep3`) instead of listing or globbing the clips is refused (`multiple clips detected...`), rather than silently recursing through every clip's files as one undifferentiated pile — that would mix separate clips together, and for component clips, mix y/u/v planes together too, while also doing needlessly more O(n²) comparison work than sorting each clip's files properly grouped. List or glob the clips, as above.
+
 Directories are taken **in the order given**, so a shell glob gives episode order.
 
 **One pooled sort, not one per episode.** All the directories' files are gathered and sorted together, so frames that recur across episodes (an opening sequence, a repeated shot) are grouped next to each other. With two copies of an episode, for example, the same frame from each copy ends up adjacent. Exact duplicates are counted over the whole pool too.
@@ -304,9 +306,9 @@ Other modes take exactly one directory. `-s`, `-e`, `-i` and `-c` given several 
 An experimental alternative to the nilsimsa similarity sort. It needs no similarity hash and none of the greedy / 2-opt passes: each frame is reduced to one number, and the frames are sorted by it once.
 
 1. **Split** each frame into its Y, U and V planes, using the resolution, sampling and bit depth from `specs.txt`.
-2. **Add** every sample in a plane, then **divide** by that plane's own sample count. For a 720x480 frame the Y plane has 345600 samples; each 4:2:0 chroma plane has 86400. Averages are rounded to the nearest whole number (half rounds up).
-3. **Format** each average as 4 digits (room for 10-bit values up to 1023) and join them, Y first: Y=250, U=127, V=36 gives `025001270036`.
-4. **Sort** the frames numerically by that 12-digit key, ascending. Y is the most significant part, so frames are ordered by average luma first, then U, then V.
+2. **Add** every sample in a plane, then **divide** by that plane's own sample count. For a 720x480 frame the Y plane has 345600 samples; each 4:2:0 chroma plane has 86400. The result is scaled ×100 before rounding to the nearest integer (half rounds up) — an average of many samples has real, usable precision well past a single sample's own bit depth, and ×1 (the original scheme) rounded that away; see the note below for why ×100 specifically.
+3. **Format** each scaled average with a digit width that depends on bit depth — 5 digits at 8-bit (room for up to 25500), 6 at 10-bit (up to 102300) — and join them, Y first: at 8-bit, Y=250.00, U=127.00, V=36.00 gives `250001270003600`.
+4. **Sort** the frames numerically by that key, ascending. Y is the most significant part, so frames are ordered by average luma first, then U, then V.
 
 ```
 y4mstore -a -f list.txt myset/clip01
@@ -315,13 +317,14 @@ tar -cf - --no-recursion -T list.txt | zstd -T2 -13 --long > clip01.tar.zst
 
 - **Ties are not duplicates.** Moving a pixel doesn't change any average, so different pictures can share a key. Frames with equal keys are ordered by filename (natural order), which keeps runs deterministic. Exact duplicates are still a separate thing. The run summary reports how many distinct keys there were and how many frames share a key; a lot of sharing means the key doesn't discriminate much on your footage.
 - **This method cannot detect exact duplicates, by its nature.** Averaging is lossy and many-to-one: it collapses every frame down to three numbers, and two frames with the same average are not necessarily identical, while two frames that differ only slightly (or are byte-for-byte the same) will land on the same key or on adjacent ones, indistinguishably. A tie here is never proof of duplication, and the absence of a tie is never proof that two frames differ. If exact-duplicate detection is what you actually need, that has to come from something else (a real hash of the frame's bytes, or zpaq's own fragment-level dedup at the compression stage) — this mode isn't it, and isn't trying to be.
+- **Why ×100.** An average's own noise floor shrinks with the number of samples going into it (∝ 1/√N), so it can support real, non-noise precision far finer than one 8-bit or 10-bit sample's native range — the original ×1 scheme discarded that, especially on U/V (4× fewer samples than Y, so 4× coarser floor, using the *same* range as Y anyway). ×100 sits comfortably inside the useful range for a real, at-least-slightly-noisy source without wasting digits resolving pure 8-bit quantization noise; a completely noise-free digital source could usefully go somewhat further, a noisier one somewhat less. It isn't the only defensible value, but it's not an arbitrary one either.
 - **One frame per file.** Every file must be exactly one frame at the specs' frame size. If any isn't (a stray `.DS_Store`, a wrong resolution in `specs.txt`), y4mstore lists the offenders and exits without writing anything.
 - **Threading is per frame.** Every frame is independent, so each worker in the `-t` pool claims the next single frame as soon as it finishes its last. One OS thread per frame would cost more than the work; this gets the same per-frame parallelism with balanced load. Output is identical for any `-t`.
 - **Same layout rules as the other modes.** Name a clip directory and the specs come from its parent. Naming a set directory keys every clip in it together into one list. It needs a directory, not `-` or a single file.
 - **`-d PATH` outputs every key to a log file,** sorted, one per line, as `KEY  path`, instead of anywhere else, so a long list doesn't scroll past the progress display. Never appends — each run overwrites `PATH` fully, and if it already exists you're asked before it's replaced. Requires `-a`.
 - **Not a similarity measure.** Two frames with the same three averages can look nothing alike, and two very similar frames can straddle a rounding boundary. Whether it helps compression is an empirical question; compare against directory order and a `shuf`ed list.
 
-**Measured (one core, page cache warm):** 400 frames of 720x480 4:2:0 took 0.11 s with `-a` (about 1.9 GB/s) versus 1.87 s for the nilsimsa mode on the same frames. Every thread count from 1 to 64 produced identical output. Correctness was checked against an independent numpy implementation across 4:2:0 / 4:2:2 / 4:4:4, 8 and 10-bit, odd dimensions, rounding edges and deliberate ties, and ThreadSanitizer found no races.
+**Measured (one core, page cache warm), original ×1 scheme:** 400 frames of 720x480 4:2:0 took 0.11 s with `-a` (about 1.9 GB/s) versus 1.87 s for the nilsimsa mode on the same frames. Every thread count from 1 to 64 produced identical output. Correctness was checked against an independent numpy implementation across 4:2:0 / 4:2:2 / 4:4:4, 8 and 10-bit, odd dimensions, rounding edges and deliberate ties, and ThreadSanitizer found no races. The ×100 scaling changes only the per-plane arithmetic and digit width, not the algorithm's cost, so timing shouldn't meaningfully differ — checked so far against a handful of hand-computed values (8-bit, including a fractional-average case), not yet re-verified as exhaustively as the original ×1 numbers above.
 
 ## Serving as y4m
 
@@ -423,6 +426,6 @@ This is a separate mechanism from the `-a` additive-average sort. This duplicate
 
 ## License
 
-MIT, © 2026 Daniel Lee Witzel. See `LICENSE` and the header comment in `y4mstore.c`. y4mstore derives from nilsort, so both copyright lines are retained.
+MIT. See `LICENSE` and the header comment in `y4mstore.c`. y4mstore derives from nilsort, so both copyright lines are retained.
 
 The nilsimsa algorithm itself (the TRAN/POPC-derived tables, `tran3` mixing function, and digest construction) is a faithful port of the public reference implementation originally written by cmeclax, based on Damiani et al. 2004, "An Open Digest-based Technique for Spam Detection." Threading, greedy + 2-opt ordering, progress reporting, and the POPCNT-based comparison are inherited from nilsort.
